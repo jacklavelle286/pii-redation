@@ -1,5 +1,16 @@
 body {
     background-color: #f8f9fa;
+    font-family: 'Open Sans', sans-serif;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+    text-align: center;
+}
+
+.container {
+    width: 75%;
 }
 
 header {
@@ -16,4 +27,32 @@ header {
     padding: 2rem;
     border-radius: 0.5rem;
     box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    font-family: 'Roboto', sans-serif;
+    width: 100%;
+}
+
+h1, h2 {
+    font-family: 'Roboto', sans-serif;
+}
+
+label, p {
+    font-family: 'Open Sans', sans-serif;
+}
+
+#captcha {
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 24px;
+    font-weight: bold;
+    letter-spacing: 2px;
+    background-color: #e0e0e0;
+    padding: 10px;
+    display: inline-block;
+    width: 100%;
+    text-align: center;
+}
+
+#captcha-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
 }
