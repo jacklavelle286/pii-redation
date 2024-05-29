@@ -1,20 +1,84 @@
-User accesses the application.
-The static Website is hosted on S3.
-Route 53 handles the DNS resolution.
-ACM secures the site with SSL/TLS certificates.
-CloudFront serves the site content, leveraging ACM certificates.
-Cognito handles user authentication.
-Lambda@Edge authorizes requests using SAML tokens from Cognito.
-Upload Function: Users upload documents through the API Gateway.
-API Gateway routes requests to the Lambda function.
-Destination Bucket stores initial uploads.
-Transform to docx converts files to docx format.
-docx Bucket stores the transformed files.
-Amazon Macie processes the files for PII detection.
-Macie detects and redacts PII.
-Redaction Information is stored in DynamoDB.
-PII Table in DynamoDB holds redaction details.
-Redacted Document is created based on redaction info.
-Redacted Document is stored in a final S3 bucket.
-Email: The redacted document is emailed to the user.
-Send Redacted Document to User ensures delivery.
+### Architecture Flow:
+
+1. **Authenticated User (1)**:
+    - The user navigates to the application.
+
+2. **Static Website (2)**:
+    - The static content of the application (HTML, CSS, JS) is hosted on Amazon S3.
+
+3. **Amazon Route 53 (3)**:
+    - Route 53 handles DNS resolution for the custom domain name used by the application.
+
+4. **AWS Certificate Manager (ACM) (4)**:
+    - ACM provides SSL/TLS certificates to secure the application, ensuring all data is encrypted in transit.
+
+5. **Amazon CloudFront (5)**:
+    - CloudFront is configured as a CDN to serve the static website content from S3, using ACM certificates for HTTPS.
+
+6. **Amazon Cognito (6)**:
+    - Cognito manages user authentication, integrating with Active Directory if needed.
+
+7. **Lambda@Edge Authorizer (7)**:
+    - Lambda@Edge functions at CloudFront edge locations authorize incoming requests by validating SAML tokens issued by Cognito.
+
+8. **Upload Function (8)**:
+    - Authenticated users interact with the static website to upload documents. The upload request is routed through API Gateway.
+
+9. **Amazon API Gateway (9)**:
+    - API Gateway provides a RESTful API endpoint that triggers the upload Lambda function.
+
+10. **Destination Bucket (10)**:
+    - The initial file uploaded by the user is stored in a designated S3 bucket.
+
+11. **Transform to docx (11)**:
+    - A Lambda function processes the uploaded file, transforming it into a docx format if necessary.
+
+12. **docx Bucket (12)**:
+    - The transformed docx file is stored in another S3 bucket for further processing.
+
+13. **Pass to Amazon Macie (13)**:
+    - The docx file is then passed to Amazon Macie for PII detection.
+
+14. **Amazon Macie (14)**:
+    - Amazon Macie scans the docx file for personally identifiable information (PII) and performs redaction.
+
+15. **Pass Redaction Information to DynamoDB (15)**:
+    - The redaction details detected by Macie are stored in a DynamoDB table.
+
+16. **PII Table (16)**:
+    - The DynamoDB table holds all the PII information and redaction details.
+
+17. **Create Redacted Document (17)**:
+    - A Lambda function uses the redaction details from DynamoDB to create a final redacted version of the document.
+
+18. **Redacted final doc (18)**:
+    - The final redacted document is stored in another S3 bucket.
+
+19. **Email to User (19)**:
+    - The redacted document is then sent to the user via email, using a service like Amazon SES or another email service.
+
+20. **Send Redacted Document to User (19)**:
+    - The final step is ensuring the redacted document is securely delivered to the user's provided email address.
+
+### Diagram Flow with Numeric Labels:
+
+1. **User** accesses the application.
+2. The static **Website** is hosted on S3.
+3. **Route 53** handles the DNS resolution.
+4. **ACM** secures the site with SSL/TLS certificates.
+5. **CloudFront** serves the site content, leveraging ACM certificates.
+6. **Cognito** handles user authentication.
+7. **Lambda@Edge** authorizes requests using SAML tokens from Cognito.
+8. **Upload Function**: Users upload documents through the API Gateway.
+9. **API Gateway** routes requests to the Lambda function.
+10. **Destination Bucket** stores initial uploads.
+11. **Transform to docx** converts files to docx format.
+12. **docx Bucket** stores the transformed files.
+13. **Amazon Macie** processes the files for PII detection.
+14. **Macie** detects and redacts PII.
+15. **Redaction Information** is stored in DynamoDB.
+16. **PII Table** in DynamoDB holds redaction details.
+17. **Redacted Document** is created based on redaction info.
+18. **Redacted Document** is stored in a final S3 bucket.
+19. **Email**: The redacted document is emailed to the user.
+20. **Send Redacted Document to User** ensures delivery.
