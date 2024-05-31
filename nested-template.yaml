@@ -1,0 +1,28 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: |
+  Nested stack for S3 event notification configuration.
+
+Parameters:
+  DestinationBucket:
+    Type: String
+    Description: "Name of the destination S3 bucket"
+
+  LambdaFunctionArn:
+    Type: String
+    Description: "ARN of the Lambda function to trigger"
+
+Resources:
+  S3BucketNotification:
+    Type: Custom::S3BucketNotification
+    Properties:
+      ServiceToken: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:AWSLambdaBasicExecutionRole"
+      BucketName: !Ref DestinationBucket
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: "s3:ObjectCreated:*"
+            Function: !Ref LambdaFunctionArn
+
+Outputs:
+  BucketNotification:
+    Description: "S3 bucket notification configuration"
+    Value: !Ref S3BucketNotification

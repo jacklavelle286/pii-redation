@@ -6,12 +6,17 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 REPOSITORY_NAME="my-lambda-repo"
 IMAGE_NAME="my-lambda-image"
 ECR_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${REPOSITORY_NAME}:latest"
+BUCKET_PREFIX="pii-redaction"
+S3_BUCKET="${REGION}-${ACCOUNT_ID}-${BUCKET_PREFIX}-nested-template"
+PARENT_TEMPLATE="parent-template.yaml"
+NESTED_TEMPLATE="nested-template.yaml"
+STACK_NAME="my-pdf2docx-stack"
 
 # Function to install Docker
 install_docker() {
     echo "Installing Docker..."
     sudo apt-get update
-    sudo apt-get install \
+    sudo apt-get install -y \
         ca-certificates \
         curl \
         gnupg \
@@ -25,7 +30,7 @@ install_docker() {
       $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
     sudo apt-get update
-    sudo apt-get install docker-ce docker-ce-cli containerd.io docker-compose-plugin
+    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 
     sudo systemctl start docker
     sudo systemctl enable docker
@@ -110,3 +115,6 @@ sudo docker push ${ECR_URI}
 
 # Output the ECR image URI
 echo "ECR Image URI: ${ECR_URI}"
+
+# Create S3 bucket if it doesn't exist
+if ! aws s3 ls "s3://${S3_BUCKET}" 2>&1 |
