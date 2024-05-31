@@ -6,10 +6,9 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 REPOSITORY_NAME="my-lambda-repo"
 IMAGE_NAME="my-lambda-image"
 ECR_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${REPOSITORY_NAME}:latest"
-BUCKET_PREFIX="pii-redaction"
 S3_BUCKET="${REGION}-${ACCOUNT_ID}-${BUCKET_PREFIX}-nested-template"
 PARENT_TEMPLATE="parent-template.yaml"
-NESTED_TEMPLATE="nested-template.yaml"
+NESTED_TEMPLATE="nested-template.yaml" 
 STACK_NAME="my-pdf2docx-stack"
 
 # Function to install Docker
@@ -117,4 +116,17 @@ sudo docker push ${ECR_URI}
 echo "ECR Image URI: ${ECR_URI}"
 
 # Create S3 bucket if it doesn't exist
-if ! aws s3 ls "s3://${S3_BUCKET}" 2>&1 |
+if ! aws s3 ls "s3://${S3_BUCKET}" 2>&1 | grep -q 'NoSuchBucket'; then
+  echo "Bucket already exists"
+else
+  aws s3 mb "s3://${S3_BUCKET}" --region ${REGION}
+fi
+
+# Upload nested template to S3
+aws s3 cp ${NESTED_TEMPLATE} "s3://${S3_BUCKET}/nested-template.yaml"
+
+# Deploy the parent stack
+aws cloudformation create-stack --stack-name ${STACK_NAME} \
+  --template-body file://${PARENT_TEMPLATE} \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region ${REGION}

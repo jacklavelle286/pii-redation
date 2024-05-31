@@ -1,23 +1,17 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: |
-  This template sets up resources for PII redaction using AWS services with a Docker image.
-
-Parameters:
-  BucketPrefix:
-    Type: String
-    Default: "pii-redaction"
-    Description: "Prefix for S3 bucket names"
+  Parent stack for PII redaction using AWS services with a Docker image.
 
 Resources:
   DestinationBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub "${AWS::Region}-${AWS::AccountId}-${BucketPrefix}-destination-bucket"
+      BucketName: !Sub "${AWS::Region}-${AWS::AccountId}-destination-bucket"
 
   DocxBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub "${AWS::Region}-${AWS::AccountId}-${BucketPrefix}-docx-bucket"
+      BucketName: !Sub "${AWS::Region}-${AWS::AccountId}-docx-bucket"
 
   TransformToDocxLambdaRole:
     Type: AWS::IAM::Role
@@ -37,11 +31,11 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:GetObject
-                Resource: !Sub "arn:aws:s3:::${AWS::Region}-${AWS::AccountId}-${BucketPrefix}-destination-bucket/*"
+                Resource: !Sub "arn:aws:s3:::${AWS::Region}-${AWS::AccountId}--destination-bucket/*"
               - Effect: Allow
                 Action:
                   - s3:PutObject
-                Resource: !Sub "arn:aws:s3:::${AWS::Region}-${AWS::AccountId}-${BucketPrefix}-docx-bucket/*"
+                Resource: !Sub "arn:aws:s3:::${AWS::Region}-${AWS::AccountId}--docx-bucket/*"
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
@@ -52,98 +46,28 @@ Resources:
 
   TransformToDocxLambdaFunction:
     Type: AWS::Lambda::Function
-    DependsOn: DestinationBucket
     Properties:
-      FunctionName: TransformToDocxLambdaFunction
+      FunctionName: !Sub "TransformToDocxLambdaFunction-${AWS::StackName}"
       Role: !GetAtt TransformToDocxLambdaRole.Arn
       PackageType: Image
       Code:
         ImageUri: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/my-lambda-repo:latest"
       Environment:
         Variables:
-          DESTINATION_BUCKET: !Sub "${AWS::Region}-${AWS::AccountId}-${BucketPrefix}-destination-bucket"
-          DOCX_BUCKET: !Sub "${AWS::Region}-${AWS::AccountId}-${BucketPrefix}-docx-bucket"
+          DESTINATION_BUCKET: !Sub "${AWS::Region}-${AWS::AccountId}--destination-bucket"
+          DOCX_BUCKET: !Sub "${AWS::Region}-${AWS::AccountId}--docx-bucket"
       Timeout: 300
       MemorySize: 1024
 
-  PermissionForS3ToInvokeLambda:
+  LambdaInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
       FunctionName: !GetAtt TransformToDocxLambdaFunction.Arn
-      Principal: s3.amazonaws.com
       Action: lambda:InvokeFunction
-      SourceArn: !Sub "arn:aws:s3:::${AWS::Region}-${AWS::AccountId}-${BucketPrefix}-destination-bucket"
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub "arn:aws:s3:::${AWS::Region}-${AWS::AccountId}--destination-bucket"
 
-  S3BucketNotification:
-    Type: Custom::S3BucketNotification
-    DependsOn: PermissionForS3ToInvokeLambda
+  NotificationNestedStack:
+    Type: AWS::CloudFormation::Stack
     Properties:
-      ServiceToken: !GetAtt S3BucketNotificationLambdaFunction.Arn
-      BucketName: !Ref DestinationBucket
-      NotificationConfiguration:
-        LambdaConfigurations:
-          - Event: s3:ObjectCreated:*
-            Function: !GetAtt TransformToDocxLambdaFunction.Arn
-
-  S3BucketNotificationLambdaRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: S3BucketNotificationPolicy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:PutBucketNotification
-                Resource: !Sub "arn:aws:s3:::${AWS::Region}-${AWS::AccountId}-${BucketPrefix}-destination-bucket"
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: "*"
-
-  S3BucketNotificationLambdaFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: !Sub "S3BucketNotificationLambdaFunction-${AWS::StackName}"
-      Handler: index.handler
-      Role: !GetAtt S3BucketNotificationLambdaRole.Arn
-      Runtime: python3.9
-      Code:
-        ZipFile: |
-          import json
-          import boto3
-          import cfnresponse
-
-          s3 = boto3.client('s3')
-
-          def handler(event, context):
-              request_type = event['RequestType']
-              props = event['ResourceProperties']
-              bucket = props['BucketName']
-              notification_configuration = props['NotificationConfiguration']
-
-              try:
-                  if request_type == 'Create' or request_type == 'Update':
-                      s3.put_bucket_notification_configuration(
-                          Bucket=bucket,
-                          NotificationConfiguration=notification_configuration
-                      )
-                  elif request_type == 'Delete':
-                      s3.put_bucket_notification_configuration(
-                          Bucket=bucket,
-                          NotificationConfiguration={}
-                      )
-                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
-              except Exception as e:
-                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
-
+      TemplateURL: !Sub "https://${AWS::Region}-${AWS::AccountId}--nested-template.s3.${AWS::Region}.amazonaws.com/nested-template.yaml"
