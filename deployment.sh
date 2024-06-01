@@ -6,9 +6,7 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 REPOSITORY_NAME="my-lambda-repo"
 IMAGE_NAME="my-lambda-image"
 ECR_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${REPOSITORY_NAME}:latest"
-S3_BUCKET="${REGION}-${ACCOUNT_ID}-${BUCKET_PREFIX}-nested-template"
-PARENT_TEMPLATE="parent-template.yaml"
-NESTED_TEMPLATE="nested-template.yaml" 
+TEMPLATE="deployment.yaml"
 STACK_NAME="my-pdf2docx-stack"
 
 # Function to install Docker
@@ -38,11 +36,26 @@ install_docker() {
     echo "Docker installed successfully."
 }
 
+# Function to add user to Docker group
+add_user_to_docker_group() {
+    echo "Adding user to Docker group..."
+    sudo usermod -aG docker $USER
+    echo "User added to Docker group. Please log out and log back in to apply the changes."
+    exit 1
+}
+
 # Check if Docker is installed
 if ! [ -x "$(command -v docker)" ]; then
   install_docker
 else
   echo "Docker is already installed."
+fi
+
+# Check if user is part of Docker group
+if groups $USER | grep &>/dev/null '\bdocker\b'; then
+  echo "User is already in the Docker group."
+else
+  add_user_to_docker_group
 fi
 
 # Create Dockerfile
@@ -97,6 +110,9 @@ def handler(event, context):
     }
 EOF
 
+# Ensure Docker daemon is running
+sudo systemctl start docker
+
 # Build Docker image
 sudo docker build -t ${IMAGE_NAME} .
 
@@ -115,18 +131,8 @@ sudo docker push ${ECR_URI}
 # Output the ECR image URI
 echo "ECR Image URI: ${ECR_URI}"
 
-# Create S3 bucket if it doesn't exist
-if ! aws s3 ls "s3://${S3_BUCKET}" 2>&1 | grep -q 'NoSuchBucket'; then
-  echo "Bucket already exists"
-else
-  aws s3 mb "s3://${S3_BUCKET}" --region ${REGION}
-fi
-
-# Upload nested template to S3
-aws s3 cp ${NESTED_TEMPLATE} "s3://${S3_BUCKET}/nested-template.yaml"
-
 # Deploy the parent stack
 aws cloudformation create-stack --stack-name ${STACK_NAME} \
-  --template-body file://${PARENT_TEMPLATE} \
+  --template-body file://${TEMPLATE} \
   --capabilities CAPABILITY_NAMED_IAM \
   --region ${REGION}

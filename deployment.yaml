@@ -3,15 +3,6 @@ Description: |
   Parent stack for PII redaction using AWS services with a Docker image.
 
 Resources:
-  DestinationBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Sub "${AWS::Region}-${AWS::AccountId}-destination-bucket"
-
-  DocxBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Sub "${AWS::Region}-${AWS::AccountId}-docx-bucket"
 
   TransformToDocxLambdaRole:
     Type: AWS::IAM::Role
@@ -31,11 +22,11 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:GetObject
-                Resource: !Sub "arn:aws:s3:::${AWS::Region}-${AWS::AccountId}--destination-bucket/*"
+                Resource: !Sub "arn:aws:s3:::${AWS::Region}-${AWS::AccountId}-destination-bucket/*"
               - Effect: Allow
                 Action:
                   - s3:PutObject
-                Resource: !Sub "arn:aws:s3:::${AWS::Region}-${AWS::AccountId}--docx-bucket/*"
+                Resource: !Sub "arn:aws:s3:::${AWS::Region}-${AWS::AccountId}-docx-bucket/*"
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
@@ -47,17 +38,31 @@ Resources:
   TransformToDocxLambdaFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: !Sub "TransformToDocxLambdaFunction-${AWS::StackName}"
+      FunctionName: TransformToDocxLambdaFunction
       Role: !GetAtt TransformToDocxLambdaRole.Arn
       PackageType: Image
       Code:
         ImageUri: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/my-lambda-repo:latest"
       Environment:
         Variables:
-          DESTINATION_BUCKET: !Sub "${AWS::Region}-${AWS::AccountId}--destination-bucket"
-          DOCX_BUCKET: !Sub "${AWS::Region}-${AWS::AccountId}--docx-bucket"
+          DESTINATION_BUCKET: !Sub "${AWS::Region}-${AWS::AccountId}-destination-bucket"
+          DOCX_BUCKET: !Sub "${AWS::Region}-${AWS::AccountId}-docx-bucket"
       Timeout: 300
       MemorySize: 1024
+      
+  BucketNotification:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::Region}-${AWS::AccountId}-destination-bucket"
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: "s3:ObjectCreated:*"
+            Function: !GetAtt TransformToDocxLambdaFunction.Arn
+
+  DocxBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::Region}-${AWS::AccountId}-docx-bucket"
 
   LambdaInvokePermission:
     Type: AWS::Lambda::Permission
@@ -65,9 +70,4 @@ Resources:
       FunctionName: !GetAtt TransformToDocxLambdaFunction.Arn
       Action: lambda:InvokeFunction
       Principal: s3.amazonaws.com
-      SourceArn: !Sub "arn:aws:s3:::${AWS::Region}-${AWS::AccountId}--destination-bucket"
-
-  NotificationNestedStack:
-    Type: AWS::CloudFormation::Stack
-    Properties:
-      TemplateURL: !Sub "https://${AWS::Region}-${AWS::AccountId}--nested-template.s3.${AWS::Region}.amazonaws.com/nested-template.yaml"
+      SourceArn: !Sub "arn:aws:s3:::${AWS::Region}-${AWS::AccountId}-destination-bucket"
