@@ -1,10 +1,10 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: |
-  Parent stack for PII redaction using AWS services with a Docker image.
+  Stack for PII redaction using AWS services with Lambda and Macie.
 
 Resources:
 
-  TransformToDocxLambdaRole:
+  PiiDetectionLambdaRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -15,7 +15,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: !Sub "TransformToDocxLambdaPolicy-${AWS::StackName}"
+        - PolicyName: PiiDetectionLambdaPolicy
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -25,49 +25,253 @@ Resources:
                 Resource: !Sub "arn:aws:s3:::${AWS::Region}-${AWS::AccountId}-destination-bucket/*"
               - Effect: Allow
                 Action:
-                  - s3:PutObject
-                Resource: !Sub "arn:aws:s3:::${AWS::Region}-${AWS::AccountId}-docx-bucket/*"
+                  - dynamodb:PutItem
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - macie2:*
+                Resource: "*"
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: "*"
-      RoleName: !Sub "TransformToDocxLambdaRole-${AWS::StackName}"
+      RoleName: !Sub "PiiDetectionLambdaRole-${AWS::StackName}"
 
-  TransformToDocxLambdaFunction:
+  PiiDetectionLambdaFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: TransformToDocxLambdaFunction
-      Role: !GetAtt TransformToDocxLambdaRole.Arn
-      PackageType: Image
+      FunctionName: PiiDetectionLambdaFunction
+      Handler: index.handler
+      Role: !GetAtt PiiDetectionLambdaRole.Arn
+      Runtime: python3.12
       Code:
-        ImageUri: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/my-lambda-repo:latest"
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import logging
+          import time
+          from datetime import datetime
+
+          s3 = boto3.client('s3')
+          macie = boto3.client('macie2')
+          dynamodb = boto3.client('dynamodb')
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def create_custom_data_identifiers():
+              custom_data_identifiers = [
+                  {
+                      "name": "FullName",
+                      "regex": r"\b[A-Z][a-z]+ [A-Z][a-z]+\b",
+                      "keywords": ["name"]
+                  },
+                  {
+                      "name": "DateOfBirth",
+                      "regex": r"\b(?:19|20)\d{2}-\d{2}-\d{2}\b",
+                      "keywords": ["date of birth", "birthday"]
+                  },
+                  {
+                      "name": "Address",
+                      "regex": r"\d{1,5} [A-Za-z0-9 ]+, [A-Za-z ]+, [A-Z]{2} \d{5}",
+                      "keywords": ["address", "street"]
+                  },
+                  {
+                      "name": "PhoneNumber",
+                      "regex": r"\b\d{3}-\d{3}-\d{4}\b",
+                      "keywords": ["phone", "contact number"]
+                  },
+                  {
+                      "name": "Email",
+                      "regex": r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b",
+                      "keywords": ["email"]
+                  },
+                  {
+                      "name": "NationalInsuranceNumber",
+                      "regex": r"\b[A-CEGHJ-PR-TW-Z]{2}\d{6}[A-D]\b",
+                      "keywords": ["national insurance", "NINO"]
+                  },
+                  {
+                      "name": "Ethnicity",
+                      "regex": r"\b[A-Za-z]+\b",
+                      "keywords": ["ethnicity"]
+                  },
+                  {
+                      "name": "CaseNumber",
+                      "regex": r"\b[A-Z]{3}-\d{4}-\d{5}\b",
+                      "keywords": ["case number"]
+                  },
+                  {
+                      "name": "MedicalConditions",
+                      "regex": r"\b[A-Za-z]+\b",
+                      "keywords": ["medical", "condition"]
+                  }
+              ]
+
+              custom_data_identifier_ids = []
+              for identifier in custom_data_identifiers:
+                  try:
+                      response = macie.create_custom_data_identifier(
+                          name=identifier["name"],
+                          description=f'Custom data identifier for {identifier["name"]}',
+                          regex=identifier["regex"],
+                          keywords=identifier["keywords"]
+                      )
+                      custom_data_identifier_ids.append(response["customDataIdentifierId"])
+                      logger.info(f"Created custom data identifier: {identifier['name']} with ID: {response['customDataIdentifierId']}")
+                  except Exception as e:
+                      logger.error(f"Error creating custom data identifier {identifier['name']}: {str(e)}")
+
+              return custom_data_identifier_ids
+
+          def json_serial(obj):
+              """JSON serializer for objects not serializable by default json code"""
+              if isinstance(obj, datetime):
+                  return obj.isoformat()
+              raise TypeError("Type not serializable")
+
+          def handler(event, context):
+              logger.info("Lambda function started")
+              table_name = os.environ['DYNAMODB_TABLE']
+
+              logger.info(f"DynamoDB Table: {table_name}")
+
+              # Create custom data identifiers
+              custom_data_identifier_ids = create_custom_data_identifiers()
+              logger.info(f"Custom Data Identifier IDs: {custom_data_identifier_ids}")
+
+              # Process the document to find PII using Macie
+              for record in event['Records']:
+                  bucket = record['s3']['bucket']['name']
+                  key = record['s3']['object']['key']
+
+                  logger.info(f"Processing bucket: {bucket}, key: {key}")
+
+                  file_type = key.split('.')[-1].lower()
+                  if file_type not in ['pdf', 'docx']:
+                      logger.error(f"Unsupported file type: {file_type}")
+                      return {
+                          'statusCode': 400,
+                          'body': json.dumps(f"Unsupported file type: {file_type}")
+                      }
+
+                  try:
+                      # Create a unique job name and client token
+                      unique_job_name = f"PII-Detection-{key}-{int(time.time())}"
+                      client_token = f"token-{unique_job_name}"
+
+                      # Create a classification job
+                      response = macie.create_classification_job(
+                          jobType='ONE_TIME',
+                          s3JobDefinition={
+                              'bucketDefinitions': [
+                                  {
+                                      'accountId': os.environ['AWS_ACCOUNT_ID'],
+                                      'buckets': [bucket]
+                                  }
+                              ],
+                              'scoping': {
+                                  'includes': {
+                                      'and': [
+                                          {
+                                              'simpleScopeTerm': {
+                                                  'comparator': 'STARTS_WITH',
+                                                  'key': 'OBJECT_KEY',
+                                                  'values': [key]
+                                              }
+                                          }
+                                      ]
+                                  }
+                              }
+                          },
+                          clientToken=client_token,
+                          customDataIdentifierIds=custom_data_identifier_ids,
+                          description=f"PII detection for {key}",
+                          initialRun=True,
+                          name=unique_job_name,
+                          tags={}
+                      )
+
+                      job_id = response['jobId']
+                      logger.info(f"Created Macie job with ID: {job_id}")
+
+                      # Wait for the job to complete
+                      while True:
+                          job_status = macie.describe_classification_job(jobId=job_id)['jobStatus']
+                          logger.info(f"Macie job status: {job_status}")
+                          if job_status in ['COMPLETE', 'CANCELLED', 'USER_PAUSED']:
+                              break
+                          time.sleep(30)
+
+                      # Get findings
+                      findings = macie.list_findings(
+                          findingCriteria={
+                              'criterion': {
+                                  'classificationDetails.jobId': {
+                                      'eq': [job_id]
+                                  }
+                              }
+                          }
+                      )
+                      if findings['findingIds']:
+                          detailed_findings = macie.get_findings(findingIds=findings['findingIds'])
+                          # Store PII data in DynamoDB
+                          dynamodb.put_item(
+                              TableName=table_name,
+                              Item={
+                                  'DocumentKey': {'S': key},
+                                  'FileType': {'S': file_type},
+                                  'PIIInfo': {'S': json.dumps(detailed_findings, default=json_serial)}
+                              }
+                          )
+
+                  except Exception as e:
+                      logger.error(f"Error processing key {key} from bucket {bucket}: {str(e)}")
+
+              logger.info("Lambda function completed successfully")
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps('Macie job created, completed, and PII data stored successfully!')
+              }
+
+
       Environment:
         Variables:
-          DESTINATION_BUCKET: !Sub "${AWS::Region}-${AWS::AccountId}-destination-bucket"
-          DOCX_BUCKET: !Sub "${AWS::Region}-${AWS::AccountId}-docx-bucket"
-      Timeout: 300
-      MemorySize: 1024
-      
-  BucketNotification:
+          DYNAMODB_TABLE: !Ref PIIDynamoDBTable
+          AWS_ACCOUNT_ID: !Ref "AWS::AccountId"
+      Timeout: 900
+      MemorySize: 3008
+
+  DestinationBucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub "${AWS::Region}-${AWS::AccountId}-destination-bucket"
       NotificationConfiguration:
         LambdaConfigurations:
           - Event: "s3:ObjectCreated:*"
-            Function: !GetAtt TransformToDocxLambdaFunction.Arn
-
-  DocxBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Sub "${AWS::Region}-${AWS::AccountId}-docx-bucket"
+            Function: !GetAtt PiiDetectionLambdaFunction.Arn
 
   LambdaInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
-      FunctionName: !GetAtt TransformToDocxLambdaFunction.Arn
+      FunctionName: !GetAtt PiiDetectionLambdaFunction.Arn
       Action: lambda:InvokeFunction
       Principal: s3.amazonaws.com
       SourceArn: !Sub "arn:aws:s3:::${AWS::Region}-${AWS::AccountId}-destination-bucket"
+
+  PIIDynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: PiiData
+      AttributeDefinitions:
+        - AttributeName: DocumentKey
+          AttributeType: S
+      KeySchema:
+        - AttributeName: DocumentKey
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
